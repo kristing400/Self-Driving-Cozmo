@@ -1,0 +1,23 @@
+
+Download the model weights from Google Drive:
+https://drive.google.com/file/d/1FDfnRu00Pzo1-ATmSYNePEOiX19uHfm4/view?usp=sharing
+Unzip the dir and move it into the handin dir at the same level as the code.
+DrivePics.fsm: genfsm and run this code normally through simple_cli
+               This code will let you drive the cozmo manually as it takes
+               pictures and labels them with steering angles. Hold down the
+               "w" button do let the cozmo move forward. Use the mouse to 
+               steer the robot on the camera image (the more right the 
+               mouse is from the center, the more it will turn right and 
+               vice versa).
+RunCNN.fsm: genfsm and run this code normally through simple_cli
+            This code will run the robot with the given model. Press
+            "w" to start the robot once it has restored its Tensorflow
+            session, and press "w" to stop the robot. 
+cnn.py: This code will train the neural net given a dir of training images.
+        run "python2 cnn.py" to train the nerual net, make sure the 
+        training images directory is set to the desired location. Sorry
+        we ran the script in python2 on our AWS instance.
+run.py: This program will stitch and generate images from the first 
+        convolutional layer. Run "python2 run.py <path to image> <path to Tensorflow checkpoint>"
+        to generate a stiched image of weights learned from first 
+        convolutional layer.

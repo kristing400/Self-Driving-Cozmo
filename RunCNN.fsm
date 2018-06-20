@@ -1,0 +1,257 @@
+from cozmo_fsm import *
+import sys
+import pygame
+import tensorflow as tf
+import time
+import threading
+from scipy import signal
+
+SPEED_POTENTIAL = 30
+img = None
+w = None
+n_outputs = 41
+PROB_THRESH = 0.25
+unsure = False
+padding=2
+
+
+def weight_variable(shape):
+    initializer = tf.contrib.layers.xavier_initializer_conv2d()
+    initial = initializer(shape=shape)
+    return tf.Variable(initial)
+
+
+def bias_variable(shape):
+    initial = tf.constant(0.1, shape=shape)
+    return tf.Variable(initial)
+
+
+def conv2d(x, W, stride):
+    return tf.nn.conv2d(x, W, strides=[1, stride, stride, 1], padding='VALID')
+
+def convolutional_neural_network(x, keep_prob):
+    W_conv1 = weight_variable([5, 5, 3, 24])
+    b_conv1 = bias_variable([24])
+    h_conv1 = tf.nn.relu(conv2d(x, W_conv1, 2) + b_conv1)
+
+    W_conv2 = weight_variable([5,5,24,36])
+    b_conv2 = bias_variable([36])
+    h_conv2 = tf.nn.relu(conv2d(h_conv1,W_conv2,2) + b_conv2)
+
+    W_conv3 = weight_variable([5,5,36,48])
+    b_conv3 = bias_variable([48])
+    h_conv3 = tf.nn.relu(conv2d(h_conv2,W_conv3,2) + b_conv3)
+
+    W_conv4 = weight_variable([3,3,48,64])
+    b_conv4 = bias_variable([64])
+    h_conv4 = tf.nn.relu(conv2d(h_conv3,W_conv4,1) + b_conv4)
+
+    W_conv5 = weight_variable([3,3,64,64])
+    b_conv5 = bias_variable([64])
+    h_conv5 = tf.nn.relu(conv2d(h_conv4,W_conv5,1) + b_conv5)
+    
+
+    #W_fc1 = weight_variable([78*58*24, 1164])
+    #W_fc1 = weight_variable([1152*50, 1164])
+    W_fc1 = weight_variable([8*13*64, 1164])
+    b_fc1 = bias_variable([1164])
+
+    #h_conv1_flat = tf.reshape(h_conv1, [-1, 58*78*24]) #this is for 1conv4fc
+    h_conv5_flat = tf.reshape(h_conv5, [-1, 8*13*64])
+    h_fc1 = tf.nn.relu(tf.matmul(h_conv5_flat, W_fc1) + b_fc1)
+    h_fc1_drop = tf.nn.dropout(h_fc1, keep_prob)
+
+    W_fc2 = weight_variable([1164, 100])
+    b_fc2 = bias_variable([100])
+    h_fc2 = tf.nn.relu(tf.matmul(h_fc1_drop, W_fc2) + b_fc2, name='fc2')
+    h_fc2_drop = tf.nn.dropout(h_fc2, keep_prob)
+
+    W_fc3 = weight_variable([100, 50])
+    b_fc3 = bias_variable([50])
+    h_fc3 = tf.nn.relu(tf.matmul(h_fc2_drop, W_fc3) + b_fc3, name='fc3')
+    h_fc3_drop = tf.nn.dropout(h_fc3, keep_prob)
+
+    W_fc4 = weight_variable([50, n_outputs+2*padding])
+    b_fc4 = bias_variable([n_outputs+2*padding])
+    output = tf.matmul(h_fc3_drop, W_fc4) + b_fc4
+
+    return output
+
+def update_w():
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+    plt.ion() ## Note this correction
+    fig=plt.figure()
+
+    x = tf.placeholder('float', [None, 120, 160, 3])
+
+    #x = tf.placeholder('float', [None, 300, 300, 3])
+
+    y = tf.placeholder('float')
+    keep_prob = tf.placeholder(tf.float32)
+
+    prediction = convolutional_neural_network(x, keep_prob)
+
+    gpu_options = tf.GPUOptions(allow_growth=True)
+
+    sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
+    sess.run(tf.global_variables_initializer())
+
+    saver = tf.train.Saver()
+    #saver.restore(sess, "/media/kyin/PC/cozmo_training/ckpts/final_model.ckpt")
+    saver.restore(sess, 
+        "/media/kyin/PC/cozmo_training/ckpts_120x160_4conv4fc_3ch/final_model.ckpt")
+
+    count = 0
+
+    def softmax(x):
+        """Compute softmax values for each sets of scores in x."""
+        e_x = np.exp(x - np.max(x))
+        return e_x / e_x.sum()
+
+
+    x_axis = np.arange(0,n_outputs+2*padding)
+
+    while True:
+        global w
+        global img
+        global unsure
+
+        if img is not None:
+
+            #img_decoded = tf.image.resize_images(img, [300,300])
+            #wei = img_decoded.eval(session=sess)
+            #x_input = np.array([wei])
+
+
+            img_decoded = tf.image.resize_images(img, [120,160])
+            wei = img_decoded.eval(session=sess)
+            x_input = np.array([wei])
+
+
+            #im = cv2.resize(img, (0,0), fx=0.5, fy=0.5)
+            #im = im[:,:,:1]
+            #x_input = np.array([im])
+
+            p = sess.run([prediction], feed_dict={x: x_input, keep_prob: 0.8})
+
+
+            probs = softmax(p[0][0])
+
+            #peak_widths = np.arange(1, 3)
+            #peak_indices = signal.find_peaks_cwt(probs, peak_widths)
+            #peak_count = len(peak_indices) # the number of peaks in the array
+            #print(peak_count)
+
+            w = 0
+            if max(probs) < PROB_THRESH:
+                print("not confident enough")
+                unsure = True
+            else:
+                unsure = False
+                for i,p in enumerate(probs):
+                    w += i * p
+
+                w = max(min(w, n_outputs), padding) - padding
+                w = w / n_outputs
+
+                print("this is our w", w)
+
+            wei_probs = [p for p in probs]
+
+            plt.plot(x_axis, np.array(wei_probs), "o-")
+            plt.ylim((0,0.6))
+            plt.show()
+
+            plt.pause(0.0001) #Note this correction
+            plt.clf()
+
+            img = None
+
+
+
+class GetInput(StateNode):
+    def __init__(self, outer):
+        super().__init__()
+        self.outer = outer
+        self.drive = False
+
+    def start(self, event=None):
+        global img
+        global w
+        global unsure
+
+
+        if self.running: return
+        super().start(event)
+
+        for event in pygame.event.get():
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    pygame.quit()
+                    self.post_failure()
+                    return
+                if event.key == pygame.K_w:
+                    self.drive = not self.drive #True
+            #elif event.type == pygame.KEYUP:
+                #if event.key == pygame.K_w:
+                #    self.drive = False
+
+        l_speed = 0
+        r_speed = 0
+
+        raw_img = self.robot.world.latest_image.raw_image
+        image = numpy.array(raw_img).astype(numpy.uint8)
+
+        img = image
+
+        if self.drive and w is not None and not unsure:
+            print("W", w)
+            l_speed = w * SPEED_POTENTIAL
+            r_speed = (1 - w) * SPEED_POTENTIAL
+
+        if self.drive and unsure:
+            l_speed = -0.5 * SPEED_POTENTIAL
+            r_speed = -0.5 * SPEED_POTENTIAL
+
+        image = pygame.surfarray.make_surface(image)
+        image = pygame.transform.rotate(image, -90)
+        image = pygame.transform.flip(image, True, False)
+
+        #image = pygame.transform.scale2x(image)
+        #image = pygame.transform.scale2x(image)
+
+        self.outer.screen.blit(image, (0,0))
+        pygame.display.update()
+
+        self.robot.drive_wheel_motors(l_speed, r_speed, 200, 200)
+
+        self.post_completion()
+
+
+class RunCNN(StateMachineProgram):
+    def __init__(self):
+        super().__init__()
+
+        pygame.init()
+
+        # Set the width and height of the screen [width,height]
+        size = [320, 240]
+        #size = [640, 480]
+        #size = [1280, 960]
+        self.screen = pygame.display.set_mode(size)
+
+        pygame.display.set_caption("My Game")
+
+        im_count = 0
+        self.drive = False
+
+        t = threading.Thread(target=update_w)
+        t.start()
+          
+    $setup{
+        init: SetLiftHeight(100) =C=> SetHeadAngle(-50) =C=> loop
+        loop: GetInput(self) =C=> loop
+        loop =F=> Print("done")
+    }

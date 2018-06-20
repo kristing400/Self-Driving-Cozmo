@@ -1,0 +1,158 @@
+from cozmo_fsm import *
+import sys
+import pygame
+
+screen = None
+drive = False
+
+SPEED_POTENTIAL = 30
+#DIR_PATH = "/media/kyin/PC/cozmo_training/train_set"
+DIR_PATH = "/media/kyin/PC/cozmo_training/val_set"
+#DELAY = 0.4 #at least 0.4 seconds between 
+DELAY = 2
+SHIFT1 = 90
+SHIFT1_w_offset = 0.2
+
+im_count = 0
+prev_ts = None
+
+class GetInput(StateNode):
+    def start(self, event=None):
+        global screen
+        global drive
+        global im_count
+        global prev_ts
+
+        super().start(event)
+        for event in pygame.event.get():
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    print("wei")
+                    pygame.quit()
+                    self.post_failure()
+                    return
+                if event.key == pygame.K_w:
+                    drive = True
+                    #print(pygame.mouse.get_pos())
+            elif event.type == pygame.KEYUP:
+                if event.key == pygame.K_w:
+                    drive = False
+
+        l_speed = 0
+        r_speed = 0
+        if drive:
+            #w = pygame.mouse.get_pos()[0] / 640
+            w = pygame.mouse.get_pos()[0] / 1280
+
+            l_speed = w * SPEED_POTENTIAL
+            r_speed = (1 - w) * SPEED_POTENTIAL
+
+
+        #print(l_speed, r_speed)
+                
+        raw_img = self.robot.world.latest_image.raw_image
+        image = numpy.array(raw_img).astype(numpy.uint8)
+
+        (wei_w,wei_h,_) = image.shape
+
+        if drive:
+            # save image!
+            if prev_ts is None:
+                prev_ts = time.time()
+            elif time.time() - prev_ts > DELAY:
+                prev_ts = time.time()
+
+                cv2.imwrite("/media/kyin/PC/cozmo_training/og_pics/%d_%.10f.png" % (im_count, w), 
+                    image)
+
+                print("saving!", DIR_PATH, im_count)
+                cv2.imwrite("%s/%d_%.10f.png" % (DIR_PATH, im_count + 1, w), image)
+
+                flipped_im = cv2.flip(image, 1)
+                cv2.imwrite("%s/%d_%.10f.png" % (DIR_PATH, im_count + 2, abs(1-w)), 
+                    flipped_im)
+
+                M = np.float32([[1,0,SHIFT1],[0,1,0]])
+                shift1_im = cv2.warpAffine(image, M, (wei_h,wei_w))
+                shift1_im[:,:SHIFT1,:] = 128
+                shift_w = min(1,w + SHIFT1_w_offset)
+                cv2.imwrite("%s/%d_%.10f.png" % (DIR_PATH, im_count + 3, shift_w), shift1_im)
+
+                shift1_im_flipped = cv2.flip(shift1_im, 1)
+                cv2.imwrite("%s/%d_%.10f.png" % (DIR_PATH, im_count + 4, abs(1-shift_w)), 
+                    shift1_im_flipped)
+
+
+                M = np.float32([[1,0,-1 * SHIFT1],[0,1,0]])
+                shift2_im = cv2.warpAffine(image, M, (wei_h,wei_w))
+                shift2_im[:,-SHIFT1:-1,:] = 128
+                shift_w = max(0,w - SHIFT1_w_offset)
+                cv2.imwrite("%s/%d_%.10f.png" % (DIR_PATH, im_count + 5, shift_w), shift2_im)
+
+                shift2_im_flipped = cv2.flip(shift2_im, 1)
+
+                cv2.imwrite("%s/%d_%.10f.png" % (DIR_PATH, im_count + 6, abs(1-shift_w)), 
+                    shift2_im_flipped)
+
+
+                im_count += 6
+
+        image = pygame.surfarray.make_surface(image)
+        image = pygame.transform.rotate(image, -90)
+        image = pygame.transform.flip(image, True, False)
+        image = pygame.transform.scale2x(image)
+        image = pygame.transform.scale2x(image)
+
+        screen.blit(image, (0,0))
+        pygame.draw.circle(screen, pygame.Color(255,0,0,255), (640, 800), 50, 5)
+        pygame.display.update()
+
+        self.robot.drive_wheel_motors(l_speed, r_speed, 200, 200)
+
+        #self.post_data([l_speed, r_speed])
+        self.post_completion()
+
+# this is useless
+class MyDrive(DriveWheels):
+    def __init__(self):
+        super().__init__(0,0)
+
+    def start(self, event=None):
+        if self.running: return
+        if isinstance(event, DataEvent):
+            self.l_wheel_speed = 50 #event.data[0]
+            self.r_wheel_speed = 50 #event.data[1]
+
+        super().start(event)
+
+
+class InitPygame(StateNode):
+    def start(self, event=None):
+        global im_count
+        global screen
+
+        if self.running: return
+        super().start(event)
+        pygame.init()
+        pygame.joystick.init()
+
+        # Set the width and height of the screen [width,height]
+        # size = [640, 480]
+        size = [1280, 960]
+        screen = pygame.display.set_mode(size)
+
+        pygame.display.set_caption("My Game")
+
+        im_count = len(os.listdir(DIR_PATH))
+        print("SETTING IM COUNT TO", im_count)
+
+        self.post_completion()
+
+class DrivePics(StateMachineProgram):
+  $setup{
+    init: SetLiftHeight(100) =C=> SetHeadAngle(-50) =C=> InitPygame() =C=> loop
+    loop: GetInput()
+    #loop =D=> MyDrive() =T(0.1)=> loop
+    loop =C=> loop
+    loop =F=> Print("done")
+  }
